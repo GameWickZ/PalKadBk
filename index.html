@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>ระบบจัดการสถิติปลากัด (Offline)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f0f2f5; }
+        .container { max-width: 900px; }
+        .timer { font-size: 2.5rem; font-weight: bold; color: #dc3545; }
+        .finished-timer { color: #198754; animation: blink 1.5s linear infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        #custom-time-container { display: none; }
+    </style>
+</head>
+<body>
+    <audio id="notification-sound" src="https://www.soundjay.com/buttons/sounds/button-16.mp3" preload="auto"></audio>
+
+    <div class="container my-4">
+        <h1 class="text-center mb-4">📝 ระบบจัดการสถิติปลากัด</h1>
+
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">สร้างคู่ใหม่</div>
+            <div class="card-body">
+                <form id="match-form">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5 class="text-danger">ฝ่ายแดง</h5>
+                            <div class="mb-2"><label class="form-label">ชื่อผู้เลี้ยง</label><input type="text" class="form-control" id="red-owner-name" required></div>
+                            <div class="mb-2"><label class="form-label">น้ำหนักปลา (กรัม)</label><input type="number" step="0.001" class="form-control" id="red-fish-weight" placeholder="เช่น 1.855" required></div>
+                        </div>
+                        <div class="col-md-6">
+                            <h5 class="text-primary">ฝ่ายน้ำเงิน</h5>
+                            <div class="mb-2"><label class="form-label">ชื่อผู้เลี้ยง</label><input type="text" class="form-control" id="blue-owner-name" required></div>
+                            <div class="mb-2"><label class="form-label">น้ำหนักปลา (กรัม)</label><input type="number" step="0.001" class="form-control" id="blue-fish-weight" placeholder="เช่น 1.920" required></div>
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="mb-3"><label for="bet-amount" class="form-label">💰 เงินเดิมพันทั้งหมด (บาท)</label><input type="number" class="form-control" id="bet-amount" required></div>
+                    
+                    <div class="form-check mb-2">
+                      <input class="form-check-input" type="checkbox" id="custom-time-checkbox">
+                      <label class="form-check-label" for="custom-time-checkbox">
+                        กำหนดเวลาเริ่มการแข่งขันเอง (กรณีบันทึกย้อนหลัง)
+                      </label>
+                    </div>
+                    <div id="custom-time-container" class="mb-3">
+                        <label for="custom-start-time" class="form-label">เลือกวันและเวลาที่เริ่มกัด</label>
+                        <input type="datetime-local" class="form-control" id="custom-start-time">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100">เริ่มจับเวลาและบันทึกข้อมูล</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-danger text-white">คู่ที่กำลังแข่งขัน</div>
+            <div class="card-body">
+                <div id="ongoing-matches" class="row g-3">
+                    <p id="no-ongoing-matches" class="text-center text-muted">ยังไม่มีคู่ที่กำลังแข่งขัน</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header bg-secondary text-white">ประวัติการแข่งขัน</div>
+            <div class="card-body">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>ฝ่ายแดง</th>
+                            <th>ฝ่ายน้ำเงิน</th>
+                            <th>เดิมพัน</th>
+                            <th>ระยะเวลา</th>
+                            <th>สถานะ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-table"></tbody>
+                </table>
+                <button id="clear-history" class="btn btn-warning mt-3">ล้างประวัติทั้งหมด</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const DURATION = 3 * 60 * 60 * 1000;
+    const matchForm = document.getElementById('match-form');
+    const ongoingMatchesContainer = document.getElementById('ongoing-matches');
+    const historyTable = document.getElementById('history-table');
+    const noOngoingMatchesText = document.getElementById('no-ongoing-matches');
+    const notificationSound = document.getElementById('notification-sound');
+    const clearHistoryBtn = document.getElementById('clear-history');
+    const customTimeCheckbox = document.getElementById('custom-time-checkbox');
+    const customTimeContainer = document.getElementById('custom-time-container');
+
+    let matches = JSON.parse(localStorage.getItem('fishMatchesV3')) || [];
+    let activeTimers = {};
+
+    customTimeCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            customTimeContainer.style.display = 'block';
+            // ### แก้ไข: ตั้งค่าเวลาปัจจุบันให้ถูกต้องสำหรับ input ###
+            const now = new Date();
+            now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+            document.getElementById('custom-start-time').value = now.toISOString().slice(0, 16);
+        } else {
+            customTimeContainer.style.display = 'none';
+        }
+    });
+
+    function saveMatches() {
+        localStorage.setItem('fishMatchesV3', JSON.stringify(matches));
+    }
+
+    function formatDuration(ms) {
+        if (ms < 0) ms = 0;
+        const totalSeconds = Math.floor(ms / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function render() {
+        renderOngoingMatches();
+        renderHistory();
+    }
+
+    function renderOngoingMatches() {
+        ongoingMatchesContainer.innerHTML = '';
+        const ongoing = matches.filter(m => m.status === 'ongoing');
+        noOngoingMatchesText.style.display = ongoing.length === 0 ? 'block' : 'none';
+        ongoing.forEach(match => {
+            const col = document.createElement('div');
+            col.className = 'col-md-6';
+            col.innerHTML = `<div class="card text-center"><div class="card-header"><strong><span class="text-danger">${match.redOwnerName}</span> vs <span class="text-primary">${match.blueOwnerName}</span></strong></div><div class="card-body"><p>เดิมพัน: ${new Intl.NumberFormat().format(match.bet)} (ค่าน้ำ: ${new Intl.NumberFormat().format(match.houseCut)})</p><div id="timer-${match.id}" class="timer"></div><button class="btn btn-sm btn-warning mt-2 end-match-btn" data-id="${match.id}">จบการแข่งขัน</button></div></div>`;
+            ongoingMatchesContainer.appendChild(col);
+            startTimer(match);
+        });
+    }
+
+    function renderHistory() {
+        historyTable.innerHTML = '';
+        const sortedMatches = [...matches].sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+        if (sortedMatches.length > 0) {
+            sortedMatches.forEach(match => {
+                const isFinished = match.status === 'finished';
+                const row = document.createElement('tr');
+                const redWeightFormatted = parseFloat(match.redWeight).toFixed(3);
+                const blueWeightFormatted = parseFloat(match.blueWeight).toFixed(3);
+                let durationText = 'N/A';
+                if (isFinished) {
+                    durationText = match.matchDuration || '03:00:00';
+                }
+                row.innerHTML = `<td>${match.id}</td><td>${match.redOwnerName} (${redWeightFormatted}ก.)</td><td>${match.blueOwnerName} (${blueWeightFormatted}ก.)</td><td>${new Intl.NumberFormat().format(match.bet)}</td><td>${durationText}</td><td><span class="badge ${isFinished ? 'bg-success' : 'bg-danger'}">${isFinished ? 'จบการแข่งขัน' : 'กำลังแข่ง'}</span></td>`;
+                historyTable.appendChild(row);
+            });
+        }
+    }
+
+    function startTimer(match) {
+        if (activeTimers[match.id]) clearInterval(activeTimers[match.id]);
+        const timerElement = document.getElementById(`timer-${match.id}`);
+        if (!timerElement) return;
+        const endTime = new Date(match.endTime).getTime();
+        activeTimers[match.id] = setInterval(() => {
+            const distance = endTime - new Date().getTime();
+            if (distance <= 0) {
+                clearInterval(activeTimers[match.id]);
+                delete activeTimers[match.id];
+                const matchIndex = matches.findIndex(m => m.id === match.id);
+                if (matchIndex > -1) {
+                    matches[matchIndex].status = 'finished';
+                    saveMatches();
+                    render();
+                }
+                notificationSound.play();
+                return;
+            }
+            timerElement.textContent = formatDuration(distance);
+        }, 1000);
+    }
+
+    matchForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        let startTime;
+        if (customTimeCheckbox.checked) {
+            const customStartTimeValue = document.getElementById('custom-start-time').value;
+            // ### แก้ไข: ตรวจสอบว่ามีค่าเวลาถูกใส่เข้ามาจริง ๆ ###
+            if (!customStartTimeValue) {
+                alert('กรุณาเลือกเวลาเริ่มการแข่งขัน');
+                return; // หยุดการทำงานถ้าไม่มีการเลือกเวลา
+            }
+            startTime = new Date(customStartTimeValue);
+            // ### แก้ไข: ตรวจสอบว่าเวลาที่ได้มาถูกต้องหรือไม่ ###
+            if (isNaN(startTime.getTime())) {
+                alert('รูปแบบเวลาไม่ถูกต้อง กรุณาเลือกใหม่อีกครั้ง');
+                return; // หยุดการทำงานถ้าเวลาผิดพลาด
+            }
+        } else {
+            startTime = new Date();
+        }
+
+        const betAmount = parseFloat(document.getElementById('bet-amount').value);
+        const newMatch = {
+            id: matches.length > 0 ? Math.max(...matches.map(m => m.id)) + 1 : 1,
+            redOwnerName: document.getElementById('red-owner-name').value,
+            redWeight: document.getElementById('red-fish-weight').value,
+            blueOwnerName: document.getElementById('blue-owner-name').value,
+            blueWeight: document.getElementById('blue-fish-weight').value,
+            bet: betAmount,
+            houseCut: betAmount * 0.10,
+            startTime: startTime.toISOString(),
+            endTime: new Date(startTime.getTime() + DURATION).toISOString(),
+            status: 'ongoing',
+            matchDuration: null
+        };
+        matches.push(newMatch);
+        saveMatches();
+        render();
+        matchForm.reset();
+        customTimeCheckbox.checked = false;
+        customTimeContainer.style.display = 'none';
+    });
+
+    clearHistoryBtn.addEventListener('click', () => {
+        if (confirm('คุณแน่ใจหรือไม่ว่าต้องการล้างประวัติทั้งหมด? (คู่ที่กำลังแข่งจะไม่ถูกลบ)')) {
+            matches = matches.filter(m => m.status === 'ongoing');
+            saveMatches();
+            render();
+        }
+    });
+
+    ongoingMatchesContainer.addEventListener('click', (e) => {
+        if (e.target.classList.contains('end-match-btn')) {
+            const matchId = parseInt(e.target.dataset.id, 10);
+            if (confirm(`คุณต้องการจบการแข่งขันของคู่ที่ ${matchId} ใช่หรือไม่?`)) {
+                clearInterval(activeTimers[matchId]);
+                delete activeTimers[matchId];
+                const matchIndex = matches.findIndex(m => m.id === matchId);
+                if (matchIndex > -1) {
+                    const match = matches[matchIndex];
+                    const actualEndTime = new Date();
+                    const startTime = new Date(match.startTime);
+                    const durationMs = actualEndTime.getTime() - startTime.getTime();
+                    match.status = 'finished';
+                    match.matchDuration = formatDuration(durationMs);
+                    saveMatches();
+                    render();
+                }
+            }
+        }
+    });
+    
+    render();
+});
+</script>
+</body>
+</html>
